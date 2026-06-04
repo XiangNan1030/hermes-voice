@@ -12,3 +12,5 @@ mss>=9.0; sys_platform == 'win32'
 pyautogui>=0.9; sys_platform == 'win32'
 setuptools>=60
 wheel>=0.40
+pyperclip>=1.8
+pyperclip>=1.8; sys_platform == 'win32'
