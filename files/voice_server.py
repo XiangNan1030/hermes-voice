@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermes Voice Web — 语音 AI + 工具调用 + 粒子特效"""
-import os, sys, json, time, io, base64, warnings, asyncio
+import os, sys, json, time, io, base64, warnings, asyncio, datetime, re, subprocess, shutil
+import ctypes
 warnings.filterwarnings("ignore")
 
 HERMES_HOME = os.environ.get("HERMES_HOME",
@@ -32,7 +33,7 @@ def voice_log(typ, detail):
 import numpy as np
 from faster_whisper import WhisperModel
 from openai import OpenAI
-import edge_tts, yaml, re, datetime, subprocess, ctypes, shutil
+import edge_tts, yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import uvicorn
@@ -43,25 +44,14 @@ print("Loading Whisper base (CPU)...", flush=True, end=" ")
 whisper = WhisperModel("base", device="cpu", compute_type="int8", download_root=os.path.join(HERMES_HOME, "models", "whisper"))
 print("OK", flush=True)
 
-_cfg_path = os.path.join(HERMES_HOME, "config.yaml")
-if not os.path.exists(_cfg_path):
-    print(f"\n  [ERROR] 配置文件不存在: {_cfg_path}")
-    print("  请先运行安装脚本，或手动创建 config.yaml")
-    sys.exit(1)
-try:
-    with open(_cfg_path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    _model = cfg["model"]
-    deepseek = OpenAI(api_key=_model["api_key"], base_url=_model.get("base_url", "https://api.deepseek.com/v1"))
-    model_name = _model.get("default", "deepseek-v4-pro")
-    print(f"LLM: {model_name}", flush=True)
-except KeyError as e:
-    print(f"\n  [ERROR] config.yaml 缺少必要字段: {e}")
-    print("  需要 model.api_key, model.base_url, model.default")
-    sys.exit(1)
+with open(os.path.join(HERMES_HOME, "config.yaml"), encoding="utf-8") as f:
+    cfg = yaml.safe_load(f)
+deepseek = OpenAI(api_key=cfg["model"]["api_key"], base_url=cfg["model"]["base_url"])
+model_name = cfg["model"]["default"]
+print(f"LLM: {model_name}", flush=True)
 
 app = FastAPI()
-HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_particles_v2.html")
+HTML_PATH = "F:/hermes-webui/output/voice_particles_v2.html"
 
 @app.get("/")
 async def home():
@@ -110,6 +100,8 @@ def tool_open(app: str):
         "画图":"mspaint.exe","mspaint":"mspaint.exe",
         "cmd":"cmd.exe","终端":"cmd.exe",
         "资源管理器":"explorer.exe","explorer":"explorer.exe",
+        "网易云":r"D:\Wangyiyun\NetEase\CloudMusic\cloudmusic.exe",
+        "网易云音乐":r"D:\Wangyiyun\NetEase\CloudMusic\cloudmusic.exe",
         "edge":"msedge.exe","浏览器":"msedge.exe",
         "steam":"steam://rungameid/",
     }
@@ -130,10 +122,7 @@ def tool_open(app: str):
                             shell = Dispatch("WScript.Shell")
                             target = shell.CreateShortcut(os.path.join(desktop, fn)).TargetPath
                             break
-                        except ImportError:
-                            return f"无法打开 {app}: 缺少 pywin32，请运行 pip install pywin32"
-                        except Exception:
-                            pass
+                        except: pass
         # 3. 直接尝试
         target = app
     
@@ -147,29 +136,60 @@ def tool_open(app: str):
     except Exception as e:
         return f"无法打开 {app}: {e}"
 
-# ── 系统命令 ──
+# ── 系统命令（危险操作拦截） ──
+DANGEROUS = ["del ","format","rmdir","rd ","rm ","sudo","chmod 777","chown",
+             "dd if=","mkfs","shutdown","reboot",":(){","curl.*|.*sh",">/dev/sda"]
 @_register("run", "执行终端命令。如: dir D:\\hermes, tasklist, whoami")
 def tool_run(cmd: str):
+    low = cmd.lower().replace("\\","/")
+    for d in DANGEROUS:
+        if d in low:
+            return (f"[已拦截] 命令含危险操作 '{d}'。如需执行，请手动操作。"
+                    f"\n拦截的命令: {cmd[:200]}")
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                           timeout=30, encoding="utf-8", errors="replace")
-        return (r.stdout.strip() or r.stderr.strip())[:500] or "执行成功"
+        return (r.stdout.strip() or r.stderr.strip())[:500] or "执行完成"
     except subprocess.TimeoutExpired:
         return "命令超时(>30s)"
     except Exception as e:
         return f"失败: {e}"
 
-# ── 音量 ──
+# ── 音量（Windows Core Audio API） ──
 @_register("volume", "设置音量 0-100")
 def tool_volume(level: str):
     if not IS_WIN: return "音量调节仅支持 Windows"
     try:
         pct = min(max(int(level.strip()), 0), 100)
-        ud, uu = 0xAE, 0xAF
-        for _ in range(50):
-            ctypes.windll.user32.keybd_event(ud,0,0,0);ctypes.windll.user32.keybd_event(ud,0,0x0002,0);time.sleep(0.003)
-        for _ in range(pct//2):
-            ctypes.windll.user32.keybd_event(uu,0,0,0);ctypes.windll.user32.keybd_event(uu,0,0x0002,0);time.sleep(0.003)
+        ps_code = f'''
+Add-Type -TypeDefinition @"
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {{
+    int GetMasterVolumeLevelScalar(out float f);
+    int SetMasterVolumeLevelScalar(float f, System.Guid g);
+}}
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {{
+    int Activate(ref System.Guid id, int clsCtx, int pAct, out IAudioEndpointVolume vol);
+}}
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {{
+    int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice dev);
+}}
+public class Vol {{
+    public static void Set(int pct) {{
+        var eType = System.Type.GetTypeFromCLSID(new System.Guid("BCDE0395-E52F-467C-8E3D-C4579291692E"));
+        var e = (IMMDeviceEnumerator)System.Activator.CreateInstance(eType);
+        IMMDevice dev; e.GetDefaultAudioEndpoint(0, 0, out dev);
+        IAudioEndpointVolume vol; dev.Activate(ref new System.Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), 7, 0, out vol);
+        vol.SetMasterVolumeLevelScalar(pct/100f, new System.Guid());
+    }}
+}}
+"@
+[Vol]::Set({pct})
+'''
+        subprocess.run(["powershell", "-Command", ps_code], capture_output=True, timeout=10)
         return f"音量 {pct}%"
     except Exception as e:
         return f"失败: {e}"
@@ -206,7 +226,13 @@ def tool_type(text: str):
     return f"已输入: {text[:30]}"
 
 # ── 委托给 Hermes CLI（复杂任务：文件操作、多步骤、桌面操控等）─────
-HERMES_CLI = os.path.join(HERMES_HOME, "hermes-agent", "venv", "Scripts", "hermes" if IS_WIN else "bin/hermes")
+if IS_WIN:
+    HERMES_CLI = os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~/AppData/Local")),
+        "hermes", "hermes-agent", "venv", "Scripts", "hermes"
+    )
+else:
+    HERMES_CLI = os.path.expanduser("~/.hermes/hermes-agent/venv/bin/hermes")
 
 @_register("hermes", "复杂任务委托。打开桌面文件、整理文件夹、操作软件等内置工具做不了的事")
 def tool_hermes(task: str):
@@ -232,7 +258,7 @@ SYSTEM = f"""你是Hermes AI语音助手，能说话也会干活。用中文，�
 1. 不随意修改/删除电脑文件，操作前告诉用户要做什么
 2. 每次操作后说明：做了什么、对电脑有无影响
 3. 不确定时先问用户，不要自作主张
-4. 系统盘和用户数据目录不要随意修改
+4. C盘和D:\\0000声卡文件绝对不能碰
 
 可用工具:
 {chr(10).join(f'- [{n}] {d}' for n,(d,_) in TOOLS.items())}

@@ -89,7 +89,11 @@ function InstallCLI{
     if(!(Test-Path "$AgentDir\cli.py")){
         I "Downloading Hermes CLI..."
         $env:HERMES_HOME=$DataDir
-        try{Invoke-Expression (Invoke-RestMethod "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1") 2>&1|Out-Null}
+        try{
+            W "Downloading installer from GitHub. Review the script if concerned:"
+            I "  https://github.com/NousResearch/hermes-agent"
+            Invoke-Expression (Invoke-RestMethod "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1") 2>&1|Out-Null
+        }
         catch{W "Online install failed"}
     }
 
@@ -157,11 +161,11 @@ function InstallVoice{
     $venv="$VoiceDir\venv";$pexe="$venv\Scripts\python.exe"
     if(!(Test-Path $pexe -PathType Leaf)){I "Creating venv...";& $py -m venv $venv 2>&1|Out-Null}
     & $pexe -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple 2>&1|Out-Null
-    I "Installing voice deps..."
-    $pkgs=@("faster-whisper","edge-tts","fastapi","uvicorn","websockets","openai","numpy","sounddevice","soundfile","pyyaml","setuptools","wheel","pywin32","mss","pyautogui","mcp")
-    $bad=@()
-    foreach($p in $pkgs){Write-Host "    $p... " -NoNewline;$r=& $pexe -m pip install $p --timeout 120 -q 2>&1;if($LASTEXITCODE -eq 0){Write-Host "OK"}else{Write-Host "FAIL" -ForegroundColor Red;$bad+=$p}}
-    if($bad.Count -gt 0){W "Some failed: $bad"}else{O "Voice deps ready";Done "voice"}
+    $pkgs=@("faster-whisper","edge-tts","fastapi","uvicorn","websockets","openai","numpy","pyyaml","setuptools","wheel","pywin32","mss","pyautogui","mcp")
+    I "Installing packages ($($pkgs.Count) total)..."
+    & $pexe -m pip install $pkgs --timeout 300 -q 2>&1
+    if($LASTEXITCODE -eq 0){O "All deps installed";Done "deps"}
+    else{W "Some packages failed. You can retry later.";Done "deps"}
 
     # model
     if(!(Test-Path "$DataDir\models\whisper\models--Systran--faster-whisper-base")){

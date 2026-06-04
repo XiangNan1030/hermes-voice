@@ -174,7 +174,7 @@ async function start(){
 let lt=performance.now(),ta=0,frameSkip=0;
 function render(ts){
   // 每 2 帧渲染一次
-  frameSkip++;if(frameSkip%2!==0){requestAnimationFrame(render);return}
+  frameSkip++;if(frameSkip%2!==0)return;  // skip every other call -> 30fps
   let dt=Math.min((ts-lt)/1000,.08);lt=ts;ta+=dt;
   let e=Math.max(targetEnergy,remoteEnergy);
   audioEnergy+=(e-audioEnergy)*(e>audioEnergy?5:2.5)*dt;
