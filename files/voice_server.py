@@ -51,7 +51,8 @@ except (FileNotFoundError, KeyError) as e:
     print(f"[WARN] config.yaml not found or invalid: {e}", flush=True)
     print("  Using defaults. Set DEEPSEEK_API_KEY env var or edit config.yaml", flush=True)
     cfg = {"model": {"api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
-                      "base_url": "https://api.deepseek.com/v1"}}
+                      "base_url": "https://api.deepseek.com/v1",
+                      "default": "deepseek-v4-pro"}}
 deepseek = OpenAI(api_key=cfg["model"]["api_key"], base_url=cfg["model"]["base_url"])
 model_name = cfg["model"]["default"]
 print(f"LLM: {model_name}", flush=True)
