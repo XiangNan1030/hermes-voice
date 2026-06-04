@@ -44,14 +44,30 @@ print("Loading Whisper base (CPU)...", flush=True, end=" ")
 whisper = WhisperModel("base", device="cpu", compute_type="int8", download_root=os.path.join(HERMES_HOME, "models", "whisper"))
 print("OK", flush=True)
 
-with open(os.path.join(HERMES_HOME, "config.yaml"), encoding="utf-8") as f:
-    cfg = yaml.safe_load(f)
+try:
+    with open(os.path.join(HERMES_HOME, "config.yaml"), encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+except (FileNotFoundError, KeyError) as e:
+    print(f"[WARN] config.yaml not found or invalid: {e}", flush=True)
+    print("  Using defaults. Set DEEPSEEK_API_KEY env var or edit config.yaml", flush=True)
+    cfg = {"model": {"api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
+                      "base_url": "https://api.deepseek.com/v1"}}
 deepseek = OpenAI(api_key=cfg["model"]["api_key"], base_url=cfg["model"]["base_url"])
 model_name = cfg["model"]["default"]
 print(f"LLM: {model_name}", flush=True)
 
 app = FastAPI()
-HTML_PATH = "F:/hermes-webui/output/voice_particles_v2.html"
+# HTML 路径：优先找安装包里的，其次当前目录，最后脚本同目录
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_candidates = [
+    os.path.join(_script_dir, "voice_particles_v2.html"),
+    os.path.join(_script_dir, "..", "..", "..", "hermes-webui", "output", "voice_particles_v2.html"),
+    os.path.join(HERMES_HOME, "scripts", "voice_particles_v2.html"),
+]
+HTML_PATH = ""
+for _c in _candidates:
+    if os.path.exists(_c): HTML_PATH = _c; break
+if not HTML_PATH: HTML_PATH = _candidates[0]  # 兜底
 
 @app.get("/")
 async def home():
