@@ -86,7 +86,8 @@ def transcribe(audio_bytes: bytes, sr: int = 16000) -> str:
         target_len = int(len(audio) * ratio)
         indices = np.linspace(0, len(audio)-1, target_len)
         audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
-    segments, _ = whisper.transcribe(audio, language="zh", beam_size=2)
+    segments, _ = whisper.transcribe(audio, language="zh", beam_size=2,
+        initial_prompt="以下是普通话的句子。")
     return " ".join([s.text for s in segments]).strip()
 
 async def generate_tts(text: str) -> bytes:
@@ -123,12 +124,13 @@ def tool_open(app: str):
         "steam":"steam://rungameid/",
     }
     low = app.lower()
+    target = app  # 默认值
     if low in known:
         target = known[low]
-    else:
-        # 2. 扫描桌面快捷方式（仅 Windows）
-        if IS_WIN:
-            desktop = os.path.join(os.environ["USERPROFILE"], "Desktop")
+    # 2. 扫描桌面快捷方式（仅 Windows）
+    elif IS_WIN:
+        desktop = os.path.join(os.environ.get("USERPROFILE",""), "Desktop")
+        if os.path.isdir(desktop):
             for fn in os.listdir(desktop):
                 if fn.lower().endswith(".lnk"):
                     name = fn[:-4].lower()
@@ -140,8 +142,6 @@ def tool_open(app: str):
                             target = shell.CreateShortcut(os.path.join(desktop, fn)).TargetPath
                             break
                         except: pass
-        # 3. 直接尝试
-        target = app
     
     try:
         if os.path.exists(target):
@@ -153,18 +153,20 @@ def tool_open(app: str):
     except Exception as e:
         return f"无法打开 {app}: {e}"
 
-# ── 系统命令（危险操作拦截） ──
-DANGEROUS = ["del ","format","rmdir","rd ","rm ","sudo","chmod 777","chown",
-             "dd if=","mkfs","shutdown","reboot",":(){","curl.*|.*sh",">/dev/sda"]
-@_register("run", "执行终端命令。如: dir D:\\hermes, tasklist, whoami")
+# ── 系统命令（白名单，仅允许安全操作） ──
+SAFE_CMDS = ["dir","echo","whoami","hostname","ipconfig","ping","tracert",
+             "tasklist","date","time","ver","systeminfo","netstat","cd ","type",
+             "set","find","findstr","where","help","clip","chcp","path","cls"]
+@_register("run", "执行终端命令。如: dir D:\\hermes, tasklist, whoami, ipconfig")
 def tool_run(cmd: str):
-    low = cmd.lower().replace("\\","/")
-    for d in DANGEROUS:
-        if d in low:
-            return (f"[已拦截] 命令含危险操作 '{d}'。如需执行，请手动操作。"
-                    f"\n拦截的命令: {cmd[:200]}")
+    low = cmd.lower().strip()
+    base = low.split()[0] if low.split() else ""
+    base = base.split("/")[-1].split("\\")[-1]  # 提取命令名
+    if base not in SAFE_CMDS:
+        return (f"[已拦截] '{base}' 不在安全命令列表中。\n"
+                f"允许的命令: {', '.join(sorted(SAFE_CMDS[:10]))} 等")
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+        r = subprocess.run(cmd, shell=False, capture_output=True, text=True,
                           timeout=30, encoding="utf-8", errors="replace")
         return (r.stdout.strip() or r.stderr.strip())[:500] or "执行完成"
     except subprocess.TimeoutExpired:
@@ -235,11 +237,16 @@ def tool_click(pos: str):
     pyautogui.click(x, y)
     return f"已点击 ({x},{y})"
 
-# ── 键盘输入 ──
-@_register("type", "键盘输入文字")
+# ── 键盘输入（剪贴板方案，支持中文） ──
+@_register("type", "键盘输入文字（支持中英文）")
 def tool_type(text: str):
     import pyautogui
-    pyautogui.typewrite(text, interval=0.05)
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+        pyautogui.hotkey('ctrl','v')
+    except:
+        pyautogui.typewrite(text, interval=0.05)
     return f"已输入: {text[:30]}"
 
 # ── 委托给 Hermes CLI（复杂任务：文件操作、多步骤、桌面操控等）─────
@@ -291,9 +298,13 @@ SYSTEM = f"""你是Hermes AI语音助手，能说话也会干活。用中文，�
 收到工具结果后，用一句话告诉用户结果和是否有风险。不需要工具时直接聊。"""
 
 history = [{"role": "system", "content": SYSTEM}]
+MAX_HISTORY = 50
 
 def agent_reply(text: str, is_cancelled=None) -> str:
     history.append({"role": "user", "content": text})
+    # 定期裁剪历史，保留 system prompt + 最近对话
+    if len(history) > MAX_HISTORY:
+        history[:] = [history[0]] + history[-(MAX_HISTORY-1):]
     for _ in range(3):
         if is_cancelled and is_cancelled(): return "好的，已取消。"
         resp = deepseek.chat.completions.create(
@@ -367,7 +378,7 @@ async def ws_endpoint(ws: WebSocket):
                 voice_log("STT", txt)
                 print(f"  📝 {txt}", flush=True); await sm("user_text", text=txt)
                 cancelled = False  # 重置
-                reply = agent_reply(txt, is_cancelled=lambda: cancelled)
+                reply = await asyncio.to_thread(agent_reply, txt, is_cancelled=lambda: cancelled)
                 if cancelled:
                     await sm("status", text="idle"); cd_rem = CD; continue
                 voice_log("REPLY", reply)

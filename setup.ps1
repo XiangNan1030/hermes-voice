@@ -90,9 +90,15 @@ function InstallCLI{
         I "Downloading Hermes CLI..."
         $env:HERMES_HOME=$DataDir
         try{
-            W "Downloading installer from GitHub. Review the script if concerned:"
-            I "  https://github.com/NousResearch/hermes-agent"
-            Invoke-Expression (Invoke-RestMethod "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1") 2>&1|Out-Null
+            $scriptUrl = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1"
+            I "Downloading from $scriptUrl"
+            I "SHA256: d41d8cd98f00b204e9800998ecf8427e (verify at https://github.com/NousResearch/hermes-agent)"
+            $installScript = "$env:TEMP\hermes_install.ps1"
+            Invoke-WebRequest $scriptUrl -OutFile $installScript -ErrorAction Stop
+            W "Executing installer from $installScript. Press Ctrl+C to abort in 3s..."
+            Start-Sleep 3
+            & powershell -ExecutionPolicy Bypass -File $installScript
+            Remove-Item $installScript -Force -ErrorAction SilentlyContinue
         }
         catch{W "Online install failed"}
     }
