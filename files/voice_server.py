@@ -53,8 +53,11 @@ except (FileNotFoundError, KeyError) as e:
     cfg = {"model": {"api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
                       "base_url": "https://api.deepseek.com/v1",
                       "default": "deepseek-v4-pro"}}
-deepseek = OpenAI(api_key=cfg["model"]["api_key"], base_url=cfg["model"]["base_url"])
-model_name = cfg["model"]["default"]
+model_cfg = cfg.get("model", {})
+deepseek = OpenAI(
+    api_key=model_cfg.get("api_key") or os.environ.get("DEEPSEEK_API_KEY") or "",
+    base_url=model_cfg.get("base_url", "https://api.deepseek.com/v1"))
+model_name = model_cfg.get("default", "deepseek-v4-pro")
 print(f"LLM: {model_name}", flush=True)
 
 app = FastAPI()
@@ -166,8 +169,12 @@ def tool_run(cmd: str):
         return (f"[已拦截] '{base}' 不在安全命令列表中。\n"
                 f"允许的命令: {', '.join(sorted(SAFE_CMDS[:10]))} 等")
     try:
-        r = subprocess.run(cmd, shell=False, capture_output=True, text=True,
-                          timeout=30, encoding="utf-8", errors="replace")
+        if IS_WIN:
+            r = subprocess.run(["cmd","/c",cmd], capture_output=True, text=True,
+                              timeout=30, encoding="utf-8", errors="replace")
+        else:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                              timeout=30, encoding="utf-8", errors="replace")
         return (r.stdout.strip() or r.stderr.strip())[:500] or "执行完成"
     except subprocess.TimeoutExpired:
         return "命令超时(>30s)"

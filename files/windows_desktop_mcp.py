@@ -78,8 +78,13 @@ def mouse_scroll(clicks: int) -> str:
 
 @mcp.tool()
 def type_text(text: str, interval: float = 0.05) -> str:
-    """键盘输入文字。interval 每个字符间隔秒数。"""
-    pyautogui.typewrite(text, interval=interval)
+    """键盘输入文字（剪贴板方案，支持中英文）。"""
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+        pyautogui.hotkey('ctrl','v')
+    except:
+        pyautogui.typewrite(text, interval=interval)
     return json.dumps({"typed": True, "length": len(text)})
 
 

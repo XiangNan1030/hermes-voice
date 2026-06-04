@@ -35,7 +35,10 @@ function CheckPrereqs{
     foreach($n in @("python","python3","py")){
         $p=Get-Command $n -ErrorAction SilentlyContinue
         if($p){$v=(& $p.Source -c "import sys;print(sys.version)" 2>&1).Split()[0]
-            O "Python $v ($($p.Source))";$found=$true;$script:py=$p.Source;break}
+            $vMajor = [int]($v.Split('.')[0]); $vMinor = [int]($v.Split('.')[1])
+            if($vMajor -gt 3 -or ($vMajor -eq 3 -and $vMinor -ge 11)){
+                O "Python $v ($($p.Source))"; $found=$true; $script:py=$p.Source; break
+            } else { E "Python $v too old (need 3.11+)" }
     }
     if(!$found){E "Python 3.11+ required";I "https://www.python.org/downloads/";if(!$DryRun){exit 1}}
 
@@ -167,7 +170,7 @@ function InstallVoice{
     $venv="$VoiceDir\venv";$pexe="$venv\Scripts\python.exe"
     if(!(Test-Path $pexe -PathType Leaf)){I "Creating venv...";& $py -m venv $venv 2>&1|Out-Null}
     & $pexe -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple 2>&1|Out-Null
-    $pkgs=@("faster-whisper","edge-tts","fastapi","uvicorn","websockets","openai","numpy","pyyaml","setuptools","wheel","pywin32","mss","pyautogui","mcp")
+    $pkgs=@("faster-whisper","edge-tts","fastapi","uvicorn","websockets","openai","numpy","pyyaml","setuptools","wheel","pyperclip","pywin32","mss","pyautogui","mcp")
     I "Installing packages ($($pkgs.Count) total)..."
     & $pexe -m pip install $pkgs --timeout 300 -q 2>&1
     if($LASTEXITCODE -eq 0){O "All deps installed";Done "deps"}
@@ -251,10 +254,10 @@ function CreateLaunchers{
 # main
 CheckPrereqs
 if(!$Yes){Write-Host "`nPress Enter to install, Ctrl+C to cancel" -ForegroundColor Yellow;Read-Host}
-S "1/6 Hermes CLI";InstallCLI
-S "2/6 Hermes WebUI";InstallWebUI
-S "3/6 Voice assistant";InstallVoice
-S "4/6 Directories";MakeDirs
+S "1/6 Directories";MakeDirs
+S "2/6 Hermes CLI";InstallCLI
+S "3/6 Hermes WebUI";InstallWebUI
+S "4/6 Voice assistant";InstallVoice
 S "5/6 Config files";WriteConfigs
 S "6/6 Launchers";CreateLaunchers
 
