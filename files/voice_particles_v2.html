@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Hermes Voice</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:radial-gradient(ellipse at center,#0a0a1a 0%,#000010 100%);overflow:hidden;font-family:'Segoe UI',system-ui,sans-serif;height:100vh;width:100vw;user-select:none}
+canvas{display:block}
+.status{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.5);font-size:14px;letter-spacing:2px;z-index:10;transition:all .3s}
+.status.active{color:rgba(100,200,255,0.9)}
+.reply{position:fixed;top:30px;left:50%;transform:translateX(-50%);color:rgba(200,220,255,.9);font-size:16px;text-align:center;max-width:600px;opacity:0;transition:opacity .4s;z-index:10;text-shadow:0 0 20px rgba(100,160,255,.3)}
+.reply.show{opacity:1}
+.energy-bar{position:fixed;bottom:45px;left:50%;transform:translateX(-50%);width:120px;height:3px;background:rgba(255,255,255,.1);border-radius:2px;z-index:10;overflow:hidden}
+.energy-fill{height:100%;width:0%;background:linear-gradient(90deg,#4080ff,#80c0ff);border-radius:2px;transition:width .15s}
+.hint{position:fixed;bottom:25px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,.15);font-size:11px;z-index:10}
+.conn-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.conn-dot.ok{background:#4f8;box-shadow:0 0 8px #4f8}
+.conn-dot.err{background:#f55;box-shadow:0 0 8px #f55}
+.conn-dot.wait{background:#fa0;box-shadow:0 0 8px #fa0}
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div class="reply" id="reply"></div>
+<div class="energy-bar"><div class="energy-fill" id="energyFill"></div></div>
+<div class="status" id="status"><span class="conn-dot wait" id="connDot"></span> 连接中...</div>
+<div class="hint" id="hint">允许麦克风权限后直接说话</div>
+
+<script>
+// ═══════════ Canvas + Particles (精简版) ═══════════
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const statusEl=document.getElementById('status'),replyEl=document.getElementById('reply');
+const energyFill=document.getElementById('energyFill'),connDot=document.getElementById('connDot');
+let W,H,cx,cy;
+function resize(){W=canvas.width=innerWidth;H=canvas.height=innerHeight;cx=W/2;cy=H/2}
+resize();addEventListener('resize',resize);
+
+// 粒子数减到 60
+const N=60,RB=140,RA=30;
+const ps=[];
+for(let i=0;i<N;i++){
+  ps.push({
+    i,a:(i/N)*Math.PI*2,r:RB+(Math.random()-.5)*40,
+    spd:.3+Math.random()*.4,s:2+Math.random()*2.5,al:.5+Math.random()*.3,
+    h:200+Math.random()*60,sat:60+Math.random()*40,l:50+Math.random()*30,
+    sx:0,sy:0,ss:3+Math.random()*5,sa:2+Math.random()*6,
+    upd(t,e,dt){
+      this.r+=(RB+(RA-RB)*e-this.r)*3*dt;this.a+=this.spd*dt*(1+e*2);
+      if(e>.05){let s=e*2.5;this.sx=Math.sin(t*this.ss+this.i)*this.sa*s;this.sy=Math.cos(t*this.ss*1.3+this.i)*this.sa*s}
+      else{this.sx+=-this.sx*5*dt;this.sy+=-this.sy*5*dt}
+      let r=this.r+Math.sin(t*2+this.i*.3)*5*e;
+      this.x=cx+Math.cos(this.a)*r+this.sx;this.y=cy+Math.sin(this.a)*r+this.sy;
+      this.al+=(.5+e*.4-this.al)*4*dt;this.l=50+e*30;
+    }
+  })
+}
+
+function drawParticles(e){
+  for(let p of ps){
+    ctx.beginPath();ctx.arc(p.x,p.y,p.s*2.5,0,Math.PI*2);
+    ctx.fillStyle=`hsla(${p.h},${p.sat}%,${p.l}%,${p.al})`;ctx.fill();
+  }
+}
+
+function drawCore(e,t){
+  let pr=50+e*70+Math.sin(t*2.5)*8*e;
+  let g=ctx.createRadialGradient(cx,cy,pr*.3,cx,cy,pr);
+  g.addColorStop(0,`rgba(100,180,255,${.3+e*.35})`);
+  g.addColorStop(.5,`rgba(80,140,240,${.1+e*.15})`);
+  g.addColorStop(1,'rgba(60,100,220,0)');
+  ctx.beginPath();ctx.arc(cx,cy,pr,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+  let cr=15+e*12;
+  g=ctx.createRadialGradient(cx,cy,0,cx,cy,cr*2);
+  g.addColorStop(0,`rgba(200,230,255,${.6+e*.3})`);
+  g.addColorStop(.5,`rgba(120,180,255,${.3+e*.3})`);
+  g.addColorStop(1,'rgba(60,120,220,0)');
+  ctx.beginPath();ctx.arc(cx,cy,cr*2,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+}
+
+// ═══════════ Audio + WebSocket ═══════════
+let ws,audioCtx,stream,processor,sendCounter=0,isPlaying=false,processingState='idle';
+let audioEnergy=0,targetEnergy=0,remoteEnergy=0;
+
+function setStatus(s,cls){statusEl.innerHTML=s;statusEl.className='status'+(cls?' '+cls:'')}
+function setConn(s){connDot.className='conn-dot '+s}
+
+function connectWS(){
+  if(ws){try{ws.close()}catch(e){}}
+  setConn('wait');setStatus('连接中...');
+  ws=new WebSocket('ws://127.0.0.1:8282/ws');ws.binaryType='arraybuffer';
+  ws.onopen=()=>{setConn('ok');setStatus('○ 待机');document.getElementById('hint').textContent='直接说话';if(stream&&!processor)startStreaming()};
+  ws.onclose=()=>{setConn('err');setStatus('断开，3s后重连...');processor=null;setTimeout(connectWS,3000)};
+  ws.onerror=()=>setConn('err');
+  ws.onmessage=(e)=>{
+    if(typeof e.data==='string'){
+      let msg=JSON.parse(e.data);
+      if(msg.type==='status'){
+        if(msg.text==='listening'){remoteEnergy=.5;setStatus('● 聆听中...','active');processingState='listening'}
+        else if(msg.text==='thinking'){remoteEnergy=.7;setStatus('⚙ 思考中...','active');processingState='thinking'}
+        else if(msg.text==='speaking'){remoteEnergy=.3;setStatus('🔊 回复中...','active');processingState='speaking'}
+        else{remoteEnergy=0;setStatus('○ 待机');processingState='idle'}
+      }else if(msg.type==='reply_text'){
+        replyEl.textContent=msg.text;replyEl.className='reply show';
+        clearTimeout(replyEl._t);replyEl._t=setTimeout(()=>replyEl.className='reply',6000);
+      }else if(msg.type==='audio'){
+        let bytes=Uint8Array.from(atob(msg.data),c=>c.charCodeAt(0));
+        let blob=new Blob([bytes],{type:'audio/mp3'});
+        let url=URL.createObjectURL(blob);
+        isPlaying=true;
+        let a=new Audio(url);
+        a.onended=()=>{URL.revokeObjectURL(url);isPlaying=false;};
+        a.play().catch(()=>{isPlaying=false;});
+      }
+    }
+  };
+}
+
+function startStreaming(){
+  if(!stream||!audioCtx||processor)return;
+  audioCtx.resume();  // 防止浏览器暂停音频上下文
+  let actualSR = audioCtx.sampleRate;
+  processor = audioCtx.createScriptProcessor(4096, 1, 1);
+  let src = audioCtx.createMediaStreamSource(stream);
+  src.connect(processor);
+  // 必须连到 destination，否则浏览器不处理音频
+  // 用 gain=0 避免回音
+  let gain = audioCtx.createGain();
+  gain.gain.value = 0;
+  processor.connect(gain);
+  gain.connect(audioCtx.destination);
+  // 告诉后端实际采样率
+  if(ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({type:'sr', value: actualSR}));
+  }
+  processor.onaudioprocess=(e)=>{
+    let buf=e.inputBuffer.getChannelData(0);
+    // TTS 播放期间不发送音频
+    if(isPlaying)return;
+    
+    // 打断机制：思考/说话时检测到语音 → 发送取消
+    if(processingState==='thinking'||processingState==='speaking'){
+      let sum=0;for(let i=0;i<buf.length;i++)sum+=Math.abs(buf[i]);
+      if(sum/buf.length>0.02){  // 检测到声音
+        console.log('interrupt!');
+        ws.send(JSON.stringify({type:'cancel'}));
+        return;
+      }
+    }
+    
+    sendCounter++;
+    if(ws&&ws.readyState===WebSocket.OPEN){  // 每帧都发送，保证音频连续
+      ws.send(new Float32Array(buf).buffer);
+    }
+    // 能量计算（隔帧也算，减少开销）
+    if(sendCounter%2===0){
+      let sum=0;for(let i=0;i<buf.length;i++)sum+=Math.abs(buf[i]);
+      targetEnergy=Math.min(sum/buf.length*40,1);
+      if(targetEnergy<.01)targetEnergy=0;
+      energyFill.style.width=(targetEnergy*100)+'%';
+    }
+  };
+}
+
+async function start(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    audioCtx=new AudioContext();
+  }catch(e){document.getElementById('hint').textContent='请允许麦克风权限后刷新';return}
+  connectWS();
+}
+
+// ═══════════ Render (降低复杂度) ═══════════
+let lt=performance.now(),ta=0,frameSkip=0;
+function render(ts){
+  // 每 2 帧渲染一次
+  frameSkip++;if(frameSkip%2!==0){requestAnimationFrame(render);return}
+  let dt=Math.min((ts-lt)/1000,.08);lt=ts;ta+=dt;
+  let e=Math.max(targetEnergy,remoteEnergy);
+  audioEnergy+=(e-audioEnergy)*(e>audioEnergy?5:2.5)*dt;
+
+  ctx.fillStyle='rgba(5,5,18,0.45)';ctx.fillRect(0,0,W,H);
+
+  // 更新+绘制粒子
+  for(let p of ps)p.upd(ta,audioEnergy,dt);
+  drawCore(audioEnergy,ta);
+  drawParticles(audioEnergy);
+
+  requestAnimationFrame(render);
+}
+start();requestAnimationFrame(render);
+</script>
+</body>
+</html>
